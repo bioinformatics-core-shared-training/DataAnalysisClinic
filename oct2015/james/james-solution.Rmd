@@ -1,0 +1,244 @@
+---
+title: "Merging Cancer Incidence and Mutation Status"
+author: "Anne Pajon and Mark Dunning"
+date: "13 October 2015"
+output:  BiocStyle::pdf_document
+toc: TRUE
+---
+# Introduction
+
+```{r eval=TRUE, echo=F, results="asis"}
+BiocStyle::markdown()
+
+```
+
+
+From James:- 
+
+> *I need to retrieve data from public repositories and do some simple manipulation.....
+    Retrieve data on cancer incidence statistics from UK/EU, USA, Aisa (I would start with CRUK but am not sure of other data sources yet)
+    Retrieve data on mutation incidence across multiple cancer types (I have used CBioPortal, but would like to query ICGC)
+    Retrieve data on companion diagnostics and drug therapies
+    Combine these data to identify the number of patients who would be eligible for a specific treatment (e.g. Breast Cancer patients with HER2 amplification would be given Herceptin)
+    Combine these data to identify the number of patients who could be eligible for a specific treatment (e.g. any cancer patients with HER2 amplification could be given Herceptin)
+    Compare would/could population sizes*
+
+# Obtaining Cancer Incidence Rates
+
+A url to official statistics on the Cancer Research Uk website was given. The file is in Excel (`.xls`) format, which is not one of the usual file types that R can handle (i.e. `.txt`, `.csv`, `.tsv`). However, the `gdata` package can read `.xls` files that are locally-stored, and even files that are available online. To read the file, we can give the url to the `read.xls` function. As with all R packages, we first have to install `gdata` if we do not have it.
+
+```{r eval=FALSE}
+install.packages("gdata")
+```
+
+
+```{r message=FALSE}
+library(gdata)
+url <- "http://www.cancerresearchuk.org/sites/default/files/cstream-node/inc_20common_mf.xls"
+crukStats <- read.xls(url)
+head(crukStats)
+```
+
+We observe that the data frame created is not ideal, as the data we want to analyse actually start in row 3 of the table. The functions used to read data into R (`read.csv`, `read.delim`, etc) are special cases of `read.table`, which has a plethora of options that can be specified. See `?read.table` for full details. Particularly useful in this case is the ability to *skip* lines from the file.  Another change we make is to make sure that missing data in the table are represented appropriately. In the original table, missing values are represented by a blank cell. However, for numerical analysis it is often to use the special R value `NA`. The `na.strings` argument to `read.xls` will ensure that blank cells get converted to `NA`.
+
+```{r}
+crukStats <- read.xls(url,skip=2,na.strings = "",stringsAsFactors=FALSE)
+head(crukStats)
+```
+
+At this point, you can enter `View(crukStats)` in RStudio and be able to view the data.
+
+## Data Manipulation in base R
+
+If we are only interested in the first 20 rows (the 20 most-common cancers) we can *subset* the data frame to contain rows 1 to 20 and all columns. Subsetting in R is done using the square brackets `[]` with a row and column index separted by a comma `,`. i.e. ***`[row,column]`***. Where `row` and `column` are both vectors. If we omit the column index all rows will be returned; and vice-versa. So the command to subset the first 20 rows and all columns is as follows:-
+
+```{r}
+crukStats <- crukStats[1:20,]
+```
+
+
+Both the male and female counts are not ameanable for analysis, as they have comma's within. Thus, R will treat these as characters (text) and not be able to perform numeric operations. We can replace the comma using the `gsub` function. This function  will replace all occurences of a specified character with a different string. To access a particular column in a data frame, we *can* use it's numeric index as we saw above. However, it is a better practice to refer to the column by name. This is done by using the `$` operator. Typing the following and pressing ***TAB*** should bring up a list of all the columns (*variables*) that are currently in the `crukStats` object. Thus, you can easily select the one you are interested in rather than typing the full name by-hand and running the risk of making a mistake.
+
+```{r eval=FALSE}
+crukStats$
+```
+
+
+
+We want to replace a comma with a blank string in the vector `crukStats$Male` and `crukStats$Female`. However, the result of doing the `gsub` will be a character vector. Therefore we need to convert to a numeric value using `as.numeric`.
+
+```{r}
+crukStats$Male <- as.numeric(gsub(",", "", crukStats$Male))
+crukStats$Female <- as.numeric(gsub(",", "", crukStats$Female))
+head(crukStats)
+```
+
+If we now try and add the Male and Female counts together we can use the `+` operator. Addition in R (and indeed other numeric operations, -, *, / etc) will be applied to each item separately. 
+
+```{r}
+crukStats$Male + crukStats$Female
+```
+
+As you see, there is a problem with the results. For Sites such as *Prostate* where we have Male, but not Female, cases, the Total that is calculated is `NA`. Obviously this is not ideal as we would like the Total to be just the Male cases. The solution would be to use `0` to represent missing values rather than `NA`. 
+
+But how do we identify the NAs? In R, there are a series of functions that can test whether a specified value, or vector of values, is of a particular *data type*. For example, `is.numeric(10)` returns the value `r is.numeric(10)`. On the other hand, `is.numeric("ten")` returns `r is.numeric("ten")`. The function `is.na` can be used to see where `NA` values occur in an object; which could be a data frame.
+
+```{r eval=FALSE}
+is.na(crukStats)
+```
+
+```{r echo=FALSE}
+head(is.na(crukStats))
+```
+
+We can *re-assign* particular values in a data frame using the assignment operator `<-` and specifying a replacement value. To re-assign all the `NA` values to `0` we can use:
+
+```{r}
+crukStats[is.na(crukStats)] <- 0
+```
+
+Which has the desired effect :- 
+
+```{r echo=FALSE}
+head(crukStats)
+```
+
+The total can now be calculated and added as a new column in the data frame.
+
+```{r}
+crukStats$Total <- crukStats$Male + crukStats$Female
+head(crukStats)
+```
+
+Another problem we could tackle is the naming of the Cance Sites in the first column. Eventually we want to merge these data with another table. To have the best chance of being able to do this effectively, we need to ensure consistent naming between the two tables. A good start is to trim the names with have in the first column of our `crukStats` data frame to include just the organ name without the labels in brackets.
+
+The [stringr](http://cran.fhcrc.org/web/packages/stringr/vignettes/stringr.html) package has lots of useful functions for manipulating, trimming, finding (etc...) strings in R. For this example, we will only use the `str_split_fixed` function, but please do check out the documentation for [stringr](http://cran.fhcrc.org/web/packages/stringr/vignettes/stringr.html). You are sure to need some of the other functions at a later point!
+
+The purpose of `str_split_fixed` is to *split* a particular piece of text into a pre-defined number of pieces. A particular *string* is used to define where each string is split. In our example, we can split each entry in the `Cancer.Site` column using the blank space `" "` character. The result is a data frame with two columns; the first column being the text that occurs to the left of the first space, and the second column being everything to the right of the space character. i.e. `Breast (C50)` gets split into two elements; `Breast` and `(C50)`. We can then re-assign the `Cancer.Site` to be the first column in the output of `str_split_fixed`. 
+
+```{r}
+library(stringr)
+tab <- str_split_fixed(crukStats$Cancer.Site, " ",2)
+head(tab)
+crukStats$Cancer.Site <- tab[,1]
+head(crukStats)
+```
+
+For the analysis, we also want to compute the percentage that each cancer contributes to overall cancer incidences. We can do this in two stages, the first of which is to sum-up the totals for all individual cancer using the `sum` function. We can then divide all the individual cases by the overall total. We can do this in one step. 
+
+```{r}
+totalCases <- sum(crukStats$Total)
+crukStats$Percentage <- 100*(crukStats$Total / totalCases)
+head(crukStats)
+```
+
+Finally, we can notice that the `Percentage` and `X` columns are not that useful in the data frame anymore. Removing a column (or row) is done by using a `-` sign in front of the column index.
+
+whereas:-
+```{r eval=FALSE}
+crukStats[,c(4,5)]
+```
+
+```{r echo=FALSE}
+head(crukStats[,c(4,5)])
+```
+
+selects the 4th and 5th columns....
+```{r eval=FALSE}
+crukStats[,-c(4,5)]
+```
+
+```{r echo=FALSE}
+head(crukStats[,-c(4,5)])
+```
+
+
+will remove them. Or rather it prints what that the data frame looks like without the 4th and 5th columns. To remove permanently we need to create a new object or re-assign an existing one.
+
+```{r}
+crukStats <- crukStats[,-c(4,5)]
+head(crukStats)
+```
+
+If we wish we could write this data frame to a file. Writing an `xls` file is not supported. However, we can write tab-delimited and comma-separated files. The generic function for writing a data frame is `write.table`. We have control over what column separator is used, the default being a space. To use tab we can specify `\t`.
+
+```{r eval=FALSE}
+write.table(crukStats, file="cancerStatsCleaned.txt",sep="\t")
+```
+
+
+## Data Manipulation in dplyr (advanced....)
+
+```{r message=FALSE}
+crukStats <- read.xls(url,skip=2,na.strings = "")
+head(crukStats)
+
+library(tidyr)
+library(dplyr)
+crukStats <- tbl_df(crukStats)
+crukStats <- mutate(crukStats, Cancer.Site= str_split_fixed(Cancer.Site, " ",2)[,1])
+```
+
+
+
+```{r message=FALSE}
+crukStats <- mutate(crukStats, Male = as.numeric(gsub(",", "",Male))) %>% 
+              mutate(Female = as.numeric(gsub(",", "",Female))) 
+crukStats <- mutate(crukStats, Male = ifelse(is.na(Male),0,Male)) %>% 
+              mutate(Female = ifelse(is.na(Female),0,Female))  %>% 
+              mutate(Total = Male + Female)
+crukStats <- crukStats[1:20,]
+
+
+
+crukStats <- select(crukStats, -c(Persons,X))
+crukStats
+```
+
+
+```{r}
+
+crukStats <- mutate(crukStats,Percentage = 100*(Total / sum(Total)))
+crukStats
+```
+
+
+```{r}
+library(ggplot2)
+
+analysisDf <- gather(crukStats, key = gender, value=count, Male:Female)
+analysisDf
+
+
+ggplot(analysisDf, aes(x = Cancer.Site,y=count,fill=gender)) + 
+  geom_bar(stat="identity",position = "dodge") + coord_flip()
+ 
+```
+
+
+# cBioPortal data
+
+```{r}
+erbb2 <- tbl_df(read.csv("erbb2_amplifications.csv"))
+erbb2
+```
+
+
+```{r}
+erbb2 <- mutate(erbb2, STUDY_ABBREVIATION = str_split_fixed(STUDY_ABBREVIATION, " ", 2)[,1]) %>% 
+        mutate(PERCENT_CASES_ALTERED = as.numeric(gsub("%","", PERCENT_CASES_ALTERED))/100) %>% 
+        rename(Cancer.Site= STUDY_ABBREVIATION) %>% 
+        select(-STUDY_NAME)
+erbb2
+```
+
+```{r}
+combinedDf <- inner_join(crukStats, erbb2)
+```
+
+```{r}
+mutate(combinedDf, Cases.Amplified = Total*PERCENT_CASES_ALTERED) %>% 
+              select(Cancer.Site, Total,PERCENT_CASES_ALTERED,Cases.Amplified)
+
+```
+
